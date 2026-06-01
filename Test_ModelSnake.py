@@ -41,7 +41,7 @@ class Batch():
         states = torch.stack([get_state(game) for game in self.games])
         self.output = model(states)
         probs = torch.softmax(self.output, dim=1)
-        self.actions = torch.multinomial(probs, 1).squeeze()
+        self.actions = torch.argmax(probs, dim=1)
         direction = [directions[action.item()] for action in self.actions]
 
         distance_head_food1 = abs(states[:, 0]) + abs(states[:, 1])
@@ -59,7 +59,7 @@ class Batch():
                 self.reward[i] = -10
                 self.done[i] = True
             elif score_after > score_before :
-                self.reward[i] +=1
+                self.reward[i] +=10
             else : 
                 self.reward[i] -= 0.1
 
