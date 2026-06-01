@@ -10,7 +10,7 @@ print(device)
 class SnakeNN(nn.Module):
     def __init__(self):
         super().__init__()
-        input_size = 10
+        input_size = 18
         output_size = 4
         self.model = nn.Sequential(
             nn.Linear(input_size, 64),
@@ -64,7 +64,6 @@ class Batch():
                 self.reward[i] -= 0.1
 
         self.next_states = torch.stack([get_state(game) for game in self.games])
-        self.next_output = model(self.next_states)
 
         distance_head_food2 = abs(self.next_states[:, 0]) + abs(self.next_states[:, 1])
 
@@ -76,6 +75,7 @@ class Batch():
                     self.reward[i] -= 0.1
 
         with torch.no_grad():
+            self.next_output = model(self.next_states)
             self.next_q = gamma * self.next_output.max(dim=1).values
 
     def train(self):
@@ -101,6 +101,14 @@ def get_state(game):
     danger_left = game.is_collision((head_x -1, head_y))
     danger_down = game.is_collision((head_x, head_y +1))
     danger_up = game.is_collision((head_x, head_y -1))
+    danger_right2 = game.is_collision((head_x +2, head_y))
+    danger_left2 = game.is_collision((head_x -2, head_y))
+    danger_down2 = game.is_collision((head_x, head_y +2))
+    danger_up2 = game.is_collision((head_x, head_y -2))
+    danger_right3 = game.is_collision((head_x +3, head_y))
+    danger_left3 = game.is_collision((head_x -3, head_y))
+    danger_down3 = game.is_collision((head_x, head_y +3))
+    danger_up3 = game.is_collision((head_x, head_y -3))
     dir_up = game.direction == "Up"
     dir_down = game.direction == "Down"
     dir_left = game.direction == "Left"
@@ -113,6 +121,14 @@ def get_state(game):
         danger_down,
         danger_left,
         danger_right,
+        danger_up2,
+        danger_down2,
+        danger_left2,
+        danger_right2,
+        danger_up3,
+        danger_down3,
+        danger_left3,
+        danger_right3,
         dir_up,
         dir_down,
         dir_left,
@@ -137,11 +153,12 @@ for episode in range(100000):
     loss_count += 1
 
     score_total += sum(game.score for game in batch.games) / nb_envs
+    best_score = max(game.score for game in batch.games)
 
     if episode % time_view ==0:
         score_mean = score_total / loss_count
         loss_mean = loss_total / loss_count if loss_count > 0 else 0
-        print(f"Episode : {episode}, Score : {score_mean:.2f}, Loss : {loss_mean:.2f}")
+        print(f"Episode : {episode}, Score Moyen : {score_mean:.2f}, Loss Moyenne : {loss_mean:.2f}, Best Score : {best_score}")
         loss_total = 0
         loss_mean = 0
         score_total = 0
@@ -150,5 +167,5 @@ for episode in range(100000):
     viewer.draw(batch.games[0])
     time.sleep(0.02)
 
-
+model._save("snake_model.pth")
 
