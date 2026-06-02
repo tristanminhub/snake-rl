@@ -3,6 +3,8 @@ import torch.nn as nn
 from snake_game_base import SnakeGame
 from snake_viewer import SnakeViewer
 import time
+import copy
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
@@ -13,9 +15,11 @@ class SnakeNN(nn.Module):
         input_size = 18
         output_size = 4
         self.model = nn.Sequential(
-            nn.Linear(input_size, 64),
+            nn.Linear(input_size, 128),
             nn.ReLU(),
-            nn.Linear(64,output_size),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, output_size)
             )
     def forward(self, x):
         x = self.model(x)
@@ -29,19 +33,19 @@ gamma = 0.9
 time_view = 50
 nb_envs = 256
 directions = ["Up", "Down", "Left", "Right"]
-
+total_episode = 100000
 
 class Batch():
     def __init__(self, nb_envs):
         self.games = [SnakeGame() for _ in range(nb_envs)]
         
-    def play_step(self):
+    def play_step(self, temp):
         self.reward = torch.zeros(nb_envs, dtype=torch.float32, device=device)
         self.done = torch.zeros(nb_envs, dtype=torch.bool, device=device)
         states = torch.stack([get_state(game) for game in self.games])
         self.output = model(states)
-        probs = torch.softmax(self.output, dim=1)
-        self.actions = torch.argmax(probs, dim=1)
+        probs = torch.softmax(self.output/temp, dim=1)
+        self.actions = torch.multinomial(probs, num_samples=1).squeeze()
         direction = [directions[action.item()] for action in self.actions]
 
         distance_head_food1 = abs(states[:, 0]) + abs(states[:, 1])
@@ -56,12 +60,12 @@ class Batch():
             score_after = game.score
 
             if game.game_over:
-                self.reward[i] = -10
+                self.reward[i] = -15
                 self.done[i] = True
             elif score_after > score_before :
                 self.reward[i] +=10
             else : 
-                self.reward[i] -= 0.1
+                self.reward[i] -= 0.2
 
         self.next_states = torch.stack([get_state(game) for game in self.games])
 
@@ -70,9 +74,9 @@ class Batch():
         for i in range(nb_envs):
             if not self.done[i]:
                 if distance_head_food2[i] < distance_head_food1[i]:
-                    self.reward[i] += 0.1
+                    self.reward[i] += 0.3
                 elif distance_head_food2[i] > distance_head_food1[i]:
-                    self.reward[i] -= 0.1
+                    self.reward[i] -= 0.2
 
         with torch.no_grad():
             self.next_output = model(self.next_states)
@@ -137,13 +141,15 @@ def get_state(game):
     
     return x
 
+
 batch = Batch(nb_envs)
 loss_total = 0
 loss_count = 0
 score_total =0
 
-for episode in range(100000):
-    batch.play_step()
+for episode in range(total_episode):
+    temp = max(0.1, 1 - episode / total_episode)
+    batch.play_step(temp)
     batch.train()
     for i, game in enumerate(batch.games):
         if game.game_over:
@@ -165,7 +171,5 @@ for episode in range(100000):
         loss_count = 0
 
     viewer.draw(batch.games[0])
-    time.sleep(0.02)
-
-model._save("snake_model.pth")
+    time.sleep(0.01)
 
