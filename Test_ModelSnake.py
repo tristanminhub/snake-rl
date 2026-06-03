@@ -3,8 +3,6 @@ import torch.nn as nn
 from snake_game_base import SnakeGame
 from snake_viewer import SnakeViewer
 import time
-import copy
-
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
@@ -12,7 +10,7 @@ print(device)
 class SnakeNN(nn.Module):
     def __init__(self):
         super().__init__()
-        input_size = 18
+        input_size = 127
         output_size = 4
         self.model = nn.Sequential(
             nn.Linear(input_size, 128),
@@ -31,9 +29,10 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 loss_fn = nn.MSELoss()
 gamma = 0.9
 time_view = 50
-nb_envs = 256
+nb_envs = 512
 directions = ["Up", "Down", "Left", "Right"]
-total_episode = 100000
+total_step = 10000
+rayon = 5
 
 class Batch():
     def __init__(self, nb_envs):
@@ -60,7 +59,7 @@ class Batch():
             score_after = game.score
 
             if game.game_over:
-                self.reward[i] = -15
+                self.reward[i] = -10
                 self.done[i] = True
             elif score_after > score_before :
                 self.reward[i] +=10
@@ -74,9 +73,9 @@ class Batch():
         for i in range(nb_envs):
             if not self.done[i]:
                 if distance_head_food2[i] < distance_head_food1[i]:
-                    self.reward[i] += 0.3
+                    self.reward[i] += 0.2
                 elif distance_head_food2[i] > distance_head_food1[i]:
-                    self.reward[i] -= 0.2
+                    self.reward[i] -= 0.1
 
         with torch.no_grad():
             self.next_output = model(self.next_states)
@@ -97,79 +96,68 @@ class Batch():
         optimizer.step()
 
 def get_state(game):
-    food_x, food_y = game.food
-    head_x, head_y = game.snake[0]
-    food_dx = food_x - head_x
-    food_dy = food_y - head_y
-    danger_right = game.is_collision((head_x +1, head_y))
-    danger_left = game.is_collision((head_x -1, head_y))
-    danger_down = game.is_collision((head_x, head_y +1))
-    danger_up = game.is_collision((head_x, head_y -1))
-    danger_right2 = game.is_collision((head_x +2, head_y))
-    danger_left2 = game.is_collision((head_x -2, head_y))
-    danger_down2 = game.is_collision((head_x, head_y +2))
-    danger_up2 = game.is_collision((head_x, head_y -2))
-    danger_right3 = game.is_collision((head_x +3, head_y))
-    danger_left3 = game.is_collision((head_x -3, head_y))
-    danger_down3 = game.is_collision((head_x, head_y +3))
-    danger_up3 = game.is_collision((head_x, head_y -3))
+    vision = []
     dir_up = game.direction == "Up"
     dir_down = game.direction == "Down"
     dir_left = game.direction == "Left"
     dir_right = game.direction == "Right"
+    food_x, food_y = game.food
+    head_x, head_y = game.snake[0]
 
-    x =torch.tensor([
+    for y in range(head_y - rayon, head_y + rayon +1):
+        for x in range(head_x - rayon, head_x + rayon +1):
+            vision.append((game.is_collision((x, y))))
+    food_dx = food_x - head_x
+    food_dy = food_y - head_y
+
+    state = [
         food_dx,
         food_dy,
-        danger_up,
-        danger_down,
-        danger_left,
-        danger_right,
-        danger_up2,
-        danger_down2,
-        danger_left2,
-        danger_right2,
-        danger_up3,
-        danger_down3,
-        danger_left3,
-        danger_right3,
         dir_up,
         dir_down,
         dir_left,
-        dir_right],
-        dtype=torch.float32, device=device)
+        dir_right
+    ]
     
-    return x
+    for i in vision:
+        state.append(i)
 
+    x = torch.tensor(state, dtype=torch.float32, device=device)
+
+    return x
 
 batch = Batch(nb_envs)
 loss_total = 0
 loss_count = 0
-score_total =0
+finished_score_total = 0
+finished_score_count = 0
+best_finished_score = 0
 
-for episode in range(total_episode):
-    temp = max(0.1, 1 - episode / total_episode)
+for step in range(total_step):
+    temp = max(0.03, 1 - step / total_step)
     batch.play_step(temp)
     batch.train()
     for i, game in enumerate(batch.games):
         if game.game_over:
+            finished_score_total += game.score
+            finished_score_count += 1
+            best_finished_score = max(best_finished_score, game.score)
             batch.games[i] = SnakeGame()
 
     loss_total += batch.loss.item() 
     loss_count += 1
 
-    score_total += sum(game.score for game in batch.games) / nb_envs
-    best_score = max(game.score for game in batch.games)
+    score_mean = finished_score_total / finished_score_count if finished_score_count > 0 else 0
+    loss_mean = loss_total / loss_count if loss_count > 0 else 0
 
-    if episode % time_view ==0:
-        score_mean = score_total / loss_count
+    if step % time_view ==0:
+        score_mean = finished_score_total / finished_score_count if finished_score_count > 0 else 0
         loss_mean = loss_total / loss_count if loss_count > 0 else 0
-        print(f"Episode : {episode}, Score Moyen : {score_mean:.2f}, Loss Moyenne : {loss_mean:.2f}, Best Score : {best_score}")
+        print(f"Step : {step}, Score Moyen : {score_mean:.2f}, Loss Moyenne : {loss_mean:.2f}, Best Score : {best_finished_score}")
         loss_total = 0
-        loss_mean = 0
-        score_total = 0
+        best_finished_score = 0
+        finished_score_total = 0
+        finished_score_count = 0
         loss_count = 0
 
     viewer.draw(batch.games[0])
-    time.sleep(0.01)
-
