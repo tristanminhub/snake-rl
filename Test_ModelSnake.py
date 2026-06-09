@@ -27,12 +27,14 @@ model = SnakeNN().to(device)
 viewer = SnakeViewer()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 loss_fn = nn.MSELoss()
-gamma = 0.9
+gamma = 0.95
 time_view = 50
 nb_envs = 512
 directions = ["Up", "Down", "Left", "Right"]
-total_step = 10000
+total_step = 40000
 rayon = 5
+
+
 
 class Batch():
     def __init__(self, nb_envs):
@@ -59,27 +61,27 @@ class Batch():
             score_after = game.score
 
             if game.game_over:
-                self.reward[i] = -10
+                self.reward[i] = -30
                 self.done[i] = True
             elif score_after > score_before :
                 self.reward[i] +=10
             else : 
-                self.reward[i] -= 0.2
+                self.reward[i] -= 0.1
 
         self.next_states = torch.stack([get_state(game) for game in self.games])
 
         distance_head_food2 = abs(self.next_states[:, 0]) + abs(self.next_states[:, 1])
 
         for i in range(nb_envs):
-            if not self.done[i]:
-                if distance_head_food2[i] < distance_head_food1[i]:
-                    self.reward[i] += 0.2
-                elif distance_head_food2[i] > distance_head_food1[i]:
-                    self.reward[i] -= 0.1
+             if not self.done[i]:
+                 if distance_head_food2[i] < distance_head_food1[i]:
+                     self.reward[i] += 0.1 * distance_weight
+                 elif distance_head_food2[i] > distance_head_food1[i]:
+                     self.reward[i] -= 0.1 * distance_weight
 
         with torch.no_grad():
             self.next_output = model(self.next_states)
-            self.next_q = gamma * self.next_output.max(dim=1).values
+            self.next_q = gamma * torch.max(self.next_output, dim=1).values
 
     def train(self):
         target = self.output.clone().detach()
@@ -96,13 +98,14 @@ class Batch():
         optimizer.step()
 
 def get_state(game):
+    food_x, food_y = game.food
+    head_x, head_y = game.snake[0]
     vision = []
     dir_up = game.direction == "Up"
     dir_down = game.direction == "Down"
     dir_left = game.direction == "Left"
     dir_right = game.direction == "Right"
-    food_x, food_y = game.food
-    head_x, head_y = game.snake[0]
+    
 
     for y in range(head_y - rayon, head_y + rayon +1):
         for x in range(head_x - rayon, head_x + rayon +1):
@@ -133,8 +136,10 @@ finished_score_total = 0
 finished_score_count = 0
 best_finished_score = 0
 
+
 for step in range(total_step):
-    temp = max(0.03, 1 - step / total_step)
+    temp = max(0.1, 1 - 2*step / total_step)
+    distance_weight = max(0, 1 - step / 7000)
     batch.play_step(temp)
     batch.train()
     for i, game in enumerate(batch.games):
