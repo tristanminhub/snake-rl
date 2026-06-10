@@ -7,7 +7,7 @@ import time
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
 
-class SnakeNN(nn.Module):
+class DQN(nn.Module):
     def __init__(self):
         super().__init__()
         input_size = 127
@@ -23,18 +23,20 @@ class SnakeNN(nn.Module):
         x = self.model(x)
         return x
 
-model = SnakeNN().to(device)
+q_network = DQN().to(device)
+target_q_network = DQN().to(device)
+target_q_network.load_state_dict(q_network.state_dict())
+
+
 viewer = SnakeViewer()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(q_network.parameters(), lr=0.001)
 loss_fn = nn.MSELoss()
 gamma = 0.95
-time_view = 50
+time_view = 500
 nb_envs = 512
 directions = ["Up", "Down", "Left", "Right"]
 total_step = 40000
 rayon = 5
-
-
 
 class Batch():
     def __init__(self, nb_envs):
@@ -44,8 +46,8 @@ class Batch():
         self.reward = torch.zeros(nb_envs, dtype=torch.float32, device=device)
         self.done = torch.zeros(nb_envs, dtype=torch.bool, device=device)
         states = torch.stack([get_state(game) for game in self.games])
-        self.output = model(states)
-        probs = torch.softmax(self.output/temp, dim=1)
+        self.q_values = q_network(states)
+        probs = torch.softmax(self.q_values/temp, dim=1)
         self.actions = torch.multinomial(probs, num_samples=1).squeeze()
         direction = [directions[action.item()] for action in self.actions]
 
@@ -79,23 +81,22 @@ class Batch():
                  elif distance_head_food2[i] > distance_head_food1[i]:
                      self.reward[i] -= 0.1 * distance_weight
 
-        with torch.no_grad():
-            self.next_output = model(self.next_states)
-            self.next_q = gamma * torch.max(self.next_output, dim=1).values
-
     def train(self):
-        target = self.output.clone().detach()
+        with torch.no_grad():
+            next_q = target_q_network(self.next_states)
+            y_target = self.reward + gamma * torch.max(next_q, dim=1).values
+            y_target[self.done] = self.reward[self.done]
+            
+        y_pred = self.q_values[torch.arange(nb_envs), self.actions]
 
-        target_q = self.reward + self.next_q
-        target_q[self.done] = self.reward[self.done]
-
-        target[torch.arange(nb_envs, device=device), self.actions] = target_q
-
-        self.loss = loss_fn(self.output, target)
+        self.loss = loss_fn(y_pred, y_target)
 
         optimizer.zero_grad()
         self.loss.backward()
         optimizer.step()
+
+        if step % time_view == 0:
+            target_q_network.load_state_dict(q_network.state_dict())
 
 def get_state(game):
     food_x, food_y = game.food
