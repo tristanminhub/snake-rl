@@ -1,8 +1,8 @@
+import random
 import torch
 import torch.nn as nn
 from snake_game_base import SnakeGame
 from snake_viewer import SnakeViewer
-import time
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
@@ -10,12 +10,14 @@ print(device)
 class DQN(nn.Module):
     def __init__(self):
         super().__init__()
-        input_size = 127
+        input_size = 295
         output_size = 4
         self.model = nn.Sequential(
-            nn.Linear(input_size, 128),
+            nn.Linear(input_size, 256),
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.Linear(128, output_size)
             )
@@ -23,6 +25,29 @@ class DQN(nn.Module):
         x = self.model(x)
         return x
 
+MIN_SIZE = 10000
+batch_size = 64
+GRID_WIDTH = 25
+GRID_HEIGHT = 20
+
+class ReplayBuffer:
+    def __init__(self):
+        self.capacity = 100000
+        self.buffer = []
+        self.index = 0
+
+    def push(self, state, action, reward, next_state, done):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.index] = (state, action, reward, next_state, done)
+        self.index = (self.index + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return states, actions, rewards, next_states, dones
+
+replay_buffer = ReplayBuffer()
 q_network = DQN().to(device)
 target_q_network = DQN().to(device)
 target_q_network.load_state_dict(q_network.state_dict())
@@ -31,63 +56,62 @@ target_q_network.load_state_dict(q_network.state_dict())
 viewer = SnakeViewer()
 optimizer = torch.optim.Adam(q_network.parameters(), lr=0.001)
 loss_fn = nn.MSELoss()
-gamma = 0.95
+gamma = 0.98
 time_view = 500
 nb_envs = 512
 directions = ["Up", "Down", "Left", "Right"]
-total_step = 40000
-rayon = 5
+total_step = 100000
+rayon = 8
 
 class Batch():
     def __init__(self, nb_envs):
-        self.games = [SnakeGame() for _ in range(nb_envs)]
+        self.games = SnakeGame(nb_envs, device)
         
     def play_step(self, temp):
-        self.reward = torch.zeros(nb_envs, dtype=torch.float32, device=device)
-        self.done = torch.zeros(nb_envs, dtype=torch.bool, device=device)
-        states = torch.stack([get_state(game) for game in self.games])
-        self.q_values = q_network(states)
-        probs = torch.softmax(self.q_values/temp, dim=1)
-        self.actions = torch.multinomial(probs, num_samples=1).squeeze()
-        direction = [directions[action.item()] for action in self.actions]
+        score_before = self.games.score.clone()
+ 
+        states = get_state(self.games)  # (nb_envs, 295)
 
-        distance_head_food1 = abs(states[:, 0]) + abs(states[:, 1])
+        q_values = q_network(states)
+        probs = torch.softmax(q_values / temp, dim=1)
+        actions = torch.multinomial(probs, num_samples=1).squeeze()  # (nb_envs,)
 
-        for i, game in enumerate(self.games):
+        self.games.set_direction(actions) 
+        self.games.move_snake()
 
-            score_before = game.score
-            
-            game.set_direction(direction[i])
-            game.move_snake()
-
-            score_after = game.score
-
-            if game.game_over:
-                self.reward[i] = -30
-                self.done[i] = True
-            elif score_after > score_before :
-                self.reward[i] +=10
-            else : 
-                self.reward[i] -= 0.1
-
-        self.next_states = torch.stack([get_state(game) for game in self.games])
-
-        distance_head_food2 = abs(self.next_states[:, 0]) + abs(self.next_states[:, 1])
-
-        for i in range(nb_envs):
-             if not self.done[i]:
-                 if distance_head_food2[i] < distance_head_food1[i]:
-                     self.reward[i] += 0.1 * distance_weight
-                 elif distance_head_food2[i] > distance_head_food1[i]:
-                     self.reward[i] -= 0.1 * distance_weight
+        score_after = self.games.score
+        done = self.games.game_over
+ 
+        reward = torch.full((nb_envs,), -0.1, dtype=torch.float32, device=device)
+        reward[score_after > score_before] = 10.0
+        reward[done] = -15.0
+ 
+        next_states = get_state(self.games)  # (nb_envs, 295)
+ 
+        distance_before = abs(states[:, 0]) + abs(states[:, 1])
+        distance_after  = abs(next_states[:, 0]) + abs(next_states[:, 1])
+ 
+        closer  = ~done & (distance_after < distance_before)
+        farther = ~done & (distance_after > distance_before)
+        reward[closer]  += 0.1 * distance_weight
+        reward[farther] -= 0.1 * distance_weight
+ 
+        return states, actions, reward, next_states, done
 
     def train(self):
         with torch.no_grad():
-            next_q = target_q_network(self.next_states)
-            y_target = self.reward + gamma * torch.max(next_q, dim=1).values
-            y_target[self.done] = self.reward[self.done]
+            states, actions, rewards, next_states, dones = replay_buffer.sample(batch_size)
+            states = torch.cat(list(states), dim=0)
+            next_states = torch.cat(list(next_states), dim=0)
+            rewards = torch.cat(list(rewards), dim=0)
+            actions = torch.cat(list(actions), dim=0)
+            dones = torch.cat(list(dones), dim=0)
+            next_all_q = target_q_network(next_states)
+            y_target = rewards + gamma * torch.max(next_all_q,dim=1).values
+            y_target[dones] = rewards[dones]    
             
-        y_pred = self.q_values[torch.arange(nb_envs), self.actions]
+        all_q_values = q_network(states)
+        y_pred = all_q_values[torch.arange(batch_size*nb_envs), actions]
 
         self.loss = loss_fn(y_pred, y_target)
 
@@ -98,37 +122,24 @@ class Batch():
         if step % time_view == 0:
             target_q_network.load_state_dict(q_network.state_dict())
 
-def get_state(game):
-    food_x, food_y = game.food
-    head_x, head_y = game.snake[0]
-    vision = []
-    dir_up = game.direction == "Up"
-    dir_down = game.direction == "Down"
-    dir_left = game.direction == "Left"
-    dir_right = game.direction == "Right"
-    
+def get_state(games):
+    head_x = games.bodies[:, 0, 0].float()
+    head_y = games.bodies[:, 0, 1].float()
+    food_dx = (games.food[:, 0] - games.bodies[:, 0, 0]).float()
+    food_dy = (games.food[:, 1] - games.bodies[:, 0, 1]).float()
 
-    for y in range(head_y - rayon, head_y + rayon +1):
-        for x in range(head_x - rayon, head_x + rayon +1):
-            vision.append((game.is_collision((x, y))))
-    food_dx = food_x - head_x
-    food_dy = food_y - head_y
+    dir_onehot = torch.zeros(nb_envs, 4, dtype=torch.float32, device=device)
+    dir_onehot.scatter_(1, games.directions.unsqueeze(1), 1.0)
 
-    state = [
-        food_dx,
-        food_dy,
-        dir_up,
-        dir_down,
-        dir_left,
-        dir_right
-    ]
-    
-    for i in vision:
-        state.append(i)
+    vision = games.get_vision(rayon)
 
-    x = torch.tensor(state, dtype=torch.float32, device=device)
+    return torch.cat([
+        food_dx.unsqueeze(1),
+        food_dy.unsqueeze(1),
+        dir_onehot,
+        vision
+    ], dim=1)
 
-    return x
 
 batch = Batch(nb_envs)
 loss_total = 0
@@ -137,33 +148,36 @@ finished_score_total = 0
 finished_score_count = 0
 best_finished_score = 0
 
-
 for step in range(total_step):
-    temp = max(0.1, 1 - 2*step / total_step)
-    distance_weight = max(0, 1 - step / 7000)
-    batch.play_step(temp)
-    batch.train()
-    for i, game in enumerate(batch.games):
-        if game.game_over:
-            finished_score_total += game.score
-            finished_score_count += 1
-            best_finished_score = max(best_finished_score, game.score)
-            batch.games[i] = SnakeGame()
+    temp = max(0.1, 1 - step / total_step)
+    distance_weight = max(0, 1 - step / 20000)
+    states, actions, reward, next_states, done = batch.play_step(temp)
+    replay_buffer.push(states, actions, reward, next_states, done)
 
-    loss_total += batch.loss.item() 
-    loss_count += 1
+    if batch.games.game_over.any():
+        finished_score_total += batch.games.score[done].sum().item()
+        finished_score_count += done.sum().item()
+        best_finished_score = max(best_finished_score, batch.games.score[done].max().item())
+        batch.games.reset_env(done)
+    
+    viewer.draw(batch.games.get_snake_list(0), batch.games.get_food(0))
 
-    score_mean = finished_score_total / finished_score_count if finished_score_count > 0 else 0
-    loss_mean = loss_total / loss_count if loss_count > 0 else 0
+    if len(replay_buffer.buffer) >= MIN_SIZE:
+        batch.train()
+        loss_total += batch.loss.item() 
+        loss_count += 1
 
-    if step % time_view ==0:
         score_mean = finished_score_total / finished_score_count if finished_score_count > 0 else 0
         loss_mean = loss_total / loss_count if loss_count > 0 else 0
-        print(f"Step : {step}, Score Moyen : {score_mean:.2f}, Loss Moyenne : {loss_mean:.2f}, Best Score : {best_finished_score}")
-        loss_total = 0
-        best_finished_score = 0
-        finished_score_total = 0
-        finished_score_count = 0
-        loss_count = 0
 
-    viewer.draw(batch.games[0])
+        if step % time_view ==0:
+            score_mean = finished_score_total / finished_score_count if finished_score_count > 0 else 0
+            loss_mean = loss_total / loss_count if loss_count > 0 else 0
+            print(f"Step : {step}, Score Moyen : {score_mean:.2f}, Loss Moyenne : {loss_mean:.2f}, Best Score : {best_finished_score}")
+            loss_total = 0
+            best_finished_score = 0
+            finished_score_total = 0
+            finished_score_count = 0
+            loss_count = 0
+        
+        
