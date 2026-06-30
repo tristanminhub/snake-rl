@@ -17,36 +17,26 @@ class SnakeViewer:
         )
         self.canvas.pack()
 
-    def draw(self, game):
+    def draw(self, snake_list, food):
         self.canvas.delete("all")
 
         # pomme
-        food_x, food_y = game.food
+        food_x, food_y = food
         self.draw_cell(food_x, food_y, "red")
 
         # serpent
-        for i, (x, y) in enumerate(game.snake):
+        for i, (x, y) in enumerate(snake_list):
             color = "lime" if i == 0 else "green"
             self.draw_cell(x, y, color)
 
         # score
         self.canvas.create_text(
-            10,
-            10,
+            10, 10,
             anchor="nw",
-            text=f"Score: {game.score}",
+            text=f"Score: {len(snake_list) - 1}",
             fill="white",
             font=("Arial", 14, "bold")
         )
-
-        if game.game_over:
-            self.canvas.create_text(
-                GRID_WIDTH * CELL_SIZE / 2,
-                GRID_HEIGHT * CELL_SIZE / 2,
-                text="Game Over",
-                fill="white",
-                font=("Arial", 28, "bold")
-            )
 
         self.root.update()
 
