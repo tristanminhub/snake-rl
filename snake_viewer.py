@@ -1,7 +1,7 @@
 import tkinter as tk
 from snake_game_base import GRID_WIDTH, GRID_HEIGHT
 
-CELL_SIZE = 20
+CELL_SIZE = 18
 
 
 class SnakeViewer:
