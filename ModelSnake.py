@@ -29,9 +29,9 @@ class DQN(nn.Module):
 MIN_SIZE = 50000
 batch_size = 1024
 GRID_WIDTH = 25
-GRID_HEIGHT = 20
+GRID_HEIGHT = 25
 capacity = 5120000*2
-n_steps = 6
+n_steps = 20
 
 class ReplayBuffer:
     def __init__(self):
@@ -96,7 +96,7 @@ class Batch():
 
         q_values = q_network(states)
         probs = torch.softmax(q_values / temp, dim=1)
-        actions = torch.multinomial(probs, num_samples=1).squeeze()
+        actions = q_values.argmax(dim=1)
 
         self.games.set_direction(actions)
         self.games.move_snake()
@@ -104,17 +104,30 @@ class Batch():
         score_after = self.games.score
         done = self.games.game_over.clone()
 
+        # # à l'init du training loop
+        # mobility_history = torch.zeros(nb_envs, 5, dtype=torch.long, device=device)
+
+        # current_mobility = self.games.compute_mobility()
+        # mobility_drop = mobility_history[:, 0] - current_mobility
+        # penalty_mask = mobility_drop > 4
+        
+        # mobility_history = torch.roll(mobility_history, shifts=-1, dims=1)
+        # mobility_history[:, -1] = current_mobility
+
+
         reward = torch.full((nb_envs,), -0.1, dtype=torch.float32, device=device)
         reward[score_after > score_before] = 15.0
         reward[done] = -75.0
+        # reward[penalty_mask] -= 5.0
 
         return states, actions, reward, done
 
     def train(self):
         with torch.no_grad():
             states, actions, rewards, next_states, dones = replay_buffer.sample(batch_size)
+            best_actions = q_network(next_states).argmax(dim=1, keepdim=True)
             next_q_values = target_q_network(next_states)
-            best_next_q_values = torch.max(next_q_values, dim=1).values
+            best_next_q_values = next_q_values.gather(1, best_actions).squeeze(1)
             y_target = rewards.squeeze() + (gamma ** n_steps) * best_next_q_values * (1 - dones.squeeze())
         q_values = q_network(states)
         best_q_value = torch.gather(q_values, 1, actions).squeeze()
@@ -198,5 +211,5 @@ for step in range(total_step):
             loss_count = 0
 
 
-    if step % 100000 == 0:
+    if step % 50000 == 0:
         torch.save(q_network.state_dict(), "snake_dqn_1M.pth")
