@@ -2,7 +2,7 @@ import torch
 import random
 
 GRID_WIDTH = 25
-GRID_HEIGHT = 20
+GRID_HEIGHT = 25
 MAX_SNAKE_LENGTH = GRID_WIDTH * GRID_HEIGHT
 
 class SnakeGame:
@@ -113,6 +113,28 @@ class SnakeGame:
         safe_y = py.clamp(0, GRID_HEIGHT - 1)
         body = self._grid[torch.arange(self.nb_envs, device=self.device), safe_x, safe_y]
         return wall | body
+
+    def compute_mobility(self):
+        n, W, H, D = self.nb_envs, GRID_WIDTH, GRID_HEIGHT, self.device
+        free_mask = ~self._grid
+        head_x = self.bodies[:, 0, 0]
+        head_y = self.bodies[:, 0, 1]
+
+        reachable = torch.zeros(n, W, H, dtype=torch.bool, device=D)
+        reachable[torch.arange(n, device=D), head_x, head_y] = True
+
+        for _ in range(W + H):
+            expanded = reachable.clone()
+            expanded[:, 1:, :] |= reachable[:, :-1, :]
+            expanded[:, :-1, :] |= reachable[:, 1:, :]
+            expanded[:, :, 1:] |= reachable[:, :, :-1]
+            expanded[:, :, :-1] |= reachable[:, :, 1:]
+            new_reachable = expanded & free_mask
+            if torch.equal(new_reachable, reachable):
+                break
+            reachable = new_reachable
+
+        return reachable.view(n, -1).sum(dim=1)
 
     def get_vision(self, rayon):
         head_x = self.bodies[:, 0, 0]
